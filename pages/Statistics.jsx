@@ -46,7 +46,6 @@ function Statistics() {
   const [error, setError] = useState(null);
   const [loadingBudgets, setLoadingBudgets] = useState(true);
 
-};
   // Загрузка бюджетов
   useEffect(() => {
     const loadBudgets = async () => {
