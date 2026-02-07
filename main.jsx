@@ -9,6 +9,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import BudgetDetail from './pages/BudgetDetail';
 import ErrorPage from './pages/ErrorPage';
+import Statistics from './pages/Statistics';
 
 const router = createBrowserRouter([
   {
@@ -31,6 +32,10 @@ const router = createBrowserRouter([
       {
         path: 'budgets/:budgetId',
         element: <BudgetDetail />,
+      },
+      {
+        path: 'statistics',
+        element: <Statistics />,
       },
     ],
   },
