@@ -1,5 +1,4 @@
-// src/pages/Statistics.jsx — полный файл с обработкой
-
+// src/pages/Statistics.jsx
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Chart as ChartJS,
@@ -12,7 +11,6 @@ import {
   Filler
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import { fetchStatistics } from '../api/statisticsApi';
 import api from '../api/axios';
 import { useNavigate } from 'react-router-dom';
 
@@ -26,11 +24,15 @@ ChartJS.register(
   Filler
 );
 
+
+// Периоды соответствуют бэкенду
 const PERIODS = [
-  { value: '7', label: 'Неделя' },
-  { value: '30', label: 'Месяц' },
-  { value: '90', label: '3 месяца' },
-  { value: '365', label: 'Год' }
+  { value: 'THREE_DAYS', label: '3 дня', days: 3 },
+  { value: 'WEEK', label: 'Неделя', days: 7 },
+  { value: 'MONTH', label: 'Месяц', days: 30 },
+  { value: 'QUARTER', label: 'Квартал', days: 90 },
+  { value: 'HALF_YEAR', label: 'Полгода', days: 182 },
+  { value: 'YEAR', label: 'Год', days: 365 }
 ];
 
 function Statistics() {
@@ -38,18 +40,13 @@ function Statistics() {
 
   const [budgets, setBudgets] = useState([]);
   const [selectedBudgetId, setSelectedBudgetId] = useState('');
-  const [days, setDays] = useState('30');
+  const [period, setPeriod] = useState('MONTH');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [loadingBudgets, setLoadingBudgets] = useState(true);
 
-  const startDate = useMemo(() => {
-    const date = new Date();
-    date.setDate(date.getDate() - parseInt(days, 10));
-    return date.toISOString().split('T')[0];
-  }, [days]);
-
+};
   // Загрузка бюджетов
   useEffect(() => {
     const loadBudgets = async () => {
@@ -82,9 +79,13 @@ function Statistics() {
       setError(null);
 
       try {
-        const stats = await fetchStatistics(selectedBudgetId, startDate);
+        // POST с body, как у вас в контроллере
+        const response = await api.post(`/statistics/${selectedBudgetId}`, {
+          period: period
+        });
+
         if (!cancelled) {
-          setData(stats);
+          setData(response.data);
         }
       } catch (err) {
         if (!cancelled) {
@@ -100,46 +101,35 @@ function Statistics() {
     loadStatistics();
 
     return () => { cancelled = true; };
-  }, [selectedBudgetId, startDate]);
+  }, [selectedBudgetId, period]);
 
+  // Данные для графика — теперь проще, нет type/amount/category
   const chartData = useMemo(() => {
     if (!data?.points?.length) return null;
 
-    let runningBalance = data.balanceStartAmount || 0;
-    const labels = [];
-    const balances = [];
-
-    data.points.forEach((point) => {
-      const change = point.type === 'INCOME' ? point.amount : -point.amount;
-      runningBalance += change;
-
-      const date = new Date(point.createdAt);
-      labels.push(
-        date.toLocaleDateString('ru-RU', {
+    return {
+      labels: data.points.map(p => {
+        const date = new Date(p.date);
+        return date.toLocaleDateString('ru-RU', {
           day: 'numeric',
           month: 'short'
-        })
-      );
-      balances.push(runningBalance);
-    });
-
-    return {
-      labels,
+        });
+      }),
       datasets: [
         {
           label: 'Баланс',
-          data: balances,
+          data: data.points.map(p => p.balance),
           borderColor: '#36A2EB',
           backgroundColor: 'rgba(54, 162, 235, 0.1)',
           borderWidth: 2,
           fill: true,
-          tension: 0.4,
-          pointRadius: balances.length > 50 ? 0 : 3,
+          tension: 0.4, // Сглаживание для красоты
+          pointRadius: data.points.length > 60 ? 0 : 3,
           pointHoverRadius: 6
         }
       ]
     };
-  }, [data?.points, data?.balanceStartAmount]);
+  }, [data?.points]);
 
   const chartOptions = useMemo(() => ({
     responsive: true,
@@ -151,7 +141,6 @@ function Statistics() {
     plugins: {
       legend: { display: false },
       tooltip: {
-        enabled: true,
         backgroundColor: 'rgba(255, 255, 255, 0.95)',
         titleColor: '#1f2937',
         bodyColor: '#4b5563',
@@ -161,35 +150,19 @@ function Statistics() {
         displayColors: false,
         callbacks: {
           title: (items) => {
-            const date = new Date(data.points[items[0].dataIndex].createdAt);
+            const index = items[0].dataIndex;
+            const point = data.points[index];
+            const date = new Date(point.date);
             return date.toLocaleDateString('ru-RU', {
-              weekday: 'short',
+              weekday: 'long',
               year: 'numeric',
               month: 'long',
               day: 'numeric'
             });
           },
-          label: () => null,
-          afterBody: (items) => {
-            const index = items[0].dataIndex;
-            const point = data.points[index];
-            const balance = items[0].parsed.y;
-
-            const lines = [
-              `━━━━━━━━━━━━━━━━`,
-              `💰 Баланс: ${balance.toLocaleString('ru-RU')} ₽`,
-              ``
-            ];
-
-            if (point.type === 'INCOME') {
-              lines.push(`💵 +${point.amount.toLocaleString('ru-RU')} ₽`);
-              lines.push(`   Доход: ${point.category || 'Без категории'}`);
-            } else {
-              lines.push(`💸 -${point.amount.toLocaleString('ru-RU')} ₽`);
-              lines.push(`   Расход: ${point.category || 'Без категории'}`);
-            }
-
-            return lines;
+          label: (item) => {
+            const balance = item.parsed.y;
+            return `💰 Баланс: ${balance.toLocaleString('ru-RU')} ₽`;
           }
         }
       }
@@ -197,7 +170,10 @@ function Statistics() {
     scales: {
       x: {
         grid: { display: false },
-        ticks: { maxTicksLimit: 10 }
+        ticks: {
+          maxTicksLimit: 12,
+          maxRotation: 0
+        }
       },
       y: {
         beginAtZero: false,
@@ -220,8 +196,9 @@ function Statistics() {
   };
 
   const selectedBudget = budgets.find(b => b.id === parseInt(selectedBudgetId));
+  const currentPeriod = PERIODS.find(p => p.value === period);
 
-  // ========== СОСТОЯНИЕ: ЗАГРУЗКА БЮДЖЕТОВ ==========
+  // ========== ЗАГРУЗКА БЮДЖЕТОВ ==========
   if (loadingBudgets) {
     return (
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
@@ -242,7 +219,7 @@ function Statistics() {
     );
   }
 
-  // ========== СОСТОЯНИЕ: НЕТ БЮДЖЕТОВ ==========
+  // ========== НЕТ БЮДЖЕТОВ ==========
   if (!loadingBudgets && budgets.length === 0) {
     return (
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
@@ -282,7 +259,7 @@ function Statistics() {
     );
   }
 
-  // ========== ОСНОВНОЙ РЕНДЕР (бюджеты есть) ==========
+  // ========== ОСНОВНОЙ РЕНДЕР ==========
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
       {/* Шапка */}
@@ -317,8 +294,8 @@ function Statistics() {
           </select>
 
           <select
-            value={days}
-            onChange={(e) => setDays(e.target.value)}
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
             disabled={loading}
             style={{
               padding: '10px 16px',
@@ -346,11 +323,12 @@ function Statistics() {
           color: '#004085'
         }}>
           📁 <strong>{selectedBudget.account}</strong> |
-          Начальная сумма: {formatMoney(selectedBudget.initialAmount)}
+          Начальная сумма: {formatMoney(selectedBudget.initialAmount)} |
+          Период: {currentPeriod?.label} ({currentPeriod?.days} дней)
         </div>
       )}
 
-      {/* Загрузка статистики */}
+      {/* Загрузка */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '60px', color: '#6c757d' }}>
           <div style={{
@@ -377,7 +355,7 @@ function Statistics() {
         }}>
           <p>{error}</p>
           <button
-            onClick={() => setDays(days)}
+            onClick={() => setPeriod(period)}
             style={{
               marginTop: '12px',
               padding: '10px 20px',
@@ -554,6 +532,19 @@ function Statistics() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Подсказка */}
+          <div style={{
+            marginTop: '24px',
+            padding: '16px',
+            backgroundColor: '#e7f1ff',
+            borderRadius: '8px',
+            color: '#004085',
+            fontSize: '14px'
+          }}>
+            💡 <strong>Как читать график:</strong> Первая точка - баланс на начало периода. Каждая последующая точка — баланс на конец дня.
+            Линия показывает, как менялся ваш бюджет за выбранный период.
           </div>
         </>
       )}
