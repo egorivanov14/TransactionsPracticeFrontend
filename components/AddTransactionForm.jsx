@@ -7,7 +7,6 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
   const [type, setType] = useState('EXPENDITURE');
   const [loading, setLoading] = useState(false);
   
-  // Ref для предотвращения двойной отправки
   const isSubmitting = useRef(false);
 
   const categories = {
@@ -15,22 +14,18 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
     INCOME: ['Зарплата', 'Фриланс', 'Подарок', 'Инвестиции', 'Другое']
   };
 
-  // Валидация суммы
   const validateAmount = (value) => {
     const num = parseFloat(value);
     if (isNaN(num) || num <= 0) return 'Сумма должна быть больше 0';
     if (num > 999999999) return 'Сумма слишком большая';
-    if (!/^=?(\d+\.?\d{0,2})$/.test(value)) return 'Некорректный формат суммы';
     return null;
   };
 
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
-    
-    // Предотвращение двойной отправки
+
     if (isSubmitting.current || loading) return;
 
-    // Валидация
     if (!amount || !category) {
       alert('Заполните сумму и категорию');
       return;
@@ -47,18 +42,16 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
 
     try {
       await api.post('/transactions', {
-        amount: Math.round(parseFloat(amount) * 100) / 100, // Округление до 2 знаков
+        amount: Math.round(parseFloat(amount) * 100) / 100,
         type: type,
         budgetId: parseInt(budgetId, 10),
         category: category.trim()
       });
 
-      // Сброс формы
       setAmount('');
       setCategory('');
       setType('EXPENDITURE');
-      
-      // Уведомление родителя
+
       onTransactionAdded();
 
     } catch (err) {
@@ -70,10 +63,8 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
     }
   }, [amount, category, type, budgetId, loading, onTransactionAdded]);
 
-  // Обработчик изменения суммы с валидацией
   const handleAmountChange = (e) => {
     const value = e.target.value;
-    // Разрешаем только числа и точку
     if (value === '' || /^\d*\.?\d{0,2}$/.test(value)) {
       setAmount(value);
     }
@@ -90,7 +81,6 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
       <h3>Новая транзакция</h3>
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
-        {/* Тип */}
         <select
           value={type}
           onChange={(e) => {
@@ -104,7 +94,6 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
           <option value="INCOME">Доход</option>
         </select>
 
-        {/* Сумма */}
         <input
           type="text"
           inputMode="decimal"
@@ -114,9 +103,8 @@ function AddTransactionForm({ budgetId, onTransactionAdded }) {
           required
           disabled={loading}
           style={{ padding: '8px', width: '120px' }}
-        ></input>
+        />
 
-        {/* Категория */}
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}

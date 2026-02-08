@@ -9,19 +9,22 @@ function BudgetDetail() {
   const navigate = useNavigate();
 
   const [budget, setBudget] = useState(null);
-  const [transactions, setTransactions] = useState([]);
+  const [transactionsPage, setTransactionsPage] = useState(null); // Теперь храним Page объект
   const [budgetStatus, setBudgetStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Валидация budgetId
+  // Состояние пагинации
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageSize] = useState(10);
+
   const parsedBudgetId = useMemo(() => {
     const id = parseInt(budgetId, 10);
     return isNaN(id) ? null : id;
   }, [budgetId]);
 
-  const loadData = useCallback(async (showRefreshing = false) => {
+  const loadData = useCallback(async (showRefreshing = false, page = currentPage) => {
     if (!parsedBudgetId) {
       setError('Некорректный ID бюджета');
       setLoading(false);
@@ -36,19 +39,25 @@ function BudgetDetail() {
     setError(null);
 
     try {
-      // Параллельная загрузка всех данных
+      // Параллельная загрузка: бюджет, транзакции (с пагинацией), статус
       const [budgetRes, transactionsRes, statusRes] = await Promise.all([
         api.get(`/budgets/id/${parsedBudgetId}`),
-        api.get(`/transactions/budgetId/${parsedBudgetId}`),
+        api.get(`/transactions/budgetId/${parsedBudgetId}`, {
+          params: {
+            page: page,
+            size: pageSize,
+            sort: 'id,desc' // Новые сначала
+          }
+        }),
         api.get(`/budgets/status/${parsedBudgetId}`)
       ]);
 
       setBudget(budgetRes.data);
-      setTransactions(transactionsRes.data || []);
+      setTransactionsPage(transactionsRes.data); // Сохраняем Page объект
       setBudgetStatus(statusRes.data);
     } catch (err) {
       console.error('Ошибка загрузки данных:', err);
-      
+
       if (err.response?.status === 404) {
         setError('Бюджет не найден');
       } else if (err.response?.status === 403) {
@@ -60,30 +69,31 @@ function BudgetDetail() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [parsedBudgetId]);
+  }, [parsedBudgetId, currentPage, pageSize]);
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, currentPage]); // Перезагружаем при смене страницы
 
-  // Вычисление статистики на основе данных с бэкенда + локальных транзакций
+  // Вычисление статистики из budgetStatus (бэкенд уже считает)
   const stats = useMemo(() => {
-    const income = transactions
-      .filter(t => t.type === 'INCOME')
-      .reduce((sum, t) => sum + (t.amount || 0), 0);
+    // Используем данные из budgetStatus если есть, иначе считаем из видимых транзакций
+    const totalSpent = budgetStatus?.totalSpent || 0;
+    const remains = budgetStatus?.remains || 0;
+    const initialAmount = budget?.initialAmount || 0;
 
-    const expenditure = transactions
-      .filter(t => t.type === 'EXPENDITURE')
-      .reduce((sum, t) => sum + (t.amount || 0), 0);
+    // Доходы = начальная сумма + доходы - расходы = остаток
+    // Но лучше получать это с бэкенда. Пока приближенно:
+    const income = Math.max(0, remains - initialAmount + totalSpent);
+    const expenditure = totalSpent;
 
-    return { 
-      income, 
-      expenditure, 
-      total: income - expenditure 
+    return {
+      income,
+      expenditure,
+      total: income - expenditure
     };
-  }, [transactions]);
+  }, [budgetStatus, budget]);
 
-  // Получение статуса бюджета
   const status = useMemo(() => {
     const remains = budgetStatus?.remains ?? 0;
     const initialAmount = budget?.initialAmount ?? 0;
@@ -96,19 +106,24 @@ function BudgetDetail() {
   }, [budgetStatus?.remains, budget?.initialAmount]);
 
   const handleTransactionAdded = useCallback(() => {
-    loadData(true); // Обновляем с индикатором
+    setCurrentPage(0); // Сбрасываем на первую страницу
+    loadData(true, 0);
   }, [loadData]);
 
   const handleTransactionDeleted = useCallback(() => {
     loadData(true);
   }, [loadData]);
 
+  const handlePageChange = useCallback((newPage) => {
+    setCurrentPage(newPage);
+  }, []);
+
   // Рендер состояний загрузки и ошибок
   if (loading) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
         alignItems: 'center',
         padding: '60px 20px',
         color: '#6c757d'
@@ -124,7 +139,7 @@ function BudgetDetail() {
   if (error) {
     return (
       <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-        <div style={{ 
+        <div style={{
           padding: '30px',
           backgroundColor: '#f8d7da',
           borderRadius: '8px',
@@ -193,6 +208,12 @@ function BudgetDetail() {
   const totalSpent = budgetStatus?.totalSpent ?? 0;
   const initialAmount = budget.initialAmount ?? 0;
 
+  // Данные пагинации
+  const transactions = transactionsPage?.content || [];
+  const totalPages = transactionsPage?.totalPages || 1;
+  const totalElements = transactionsPage?.totalElements || 0;
+  const currentPageNumber = transactionsPage?.number || 0;
+
   const formatDate = (dateString) => {
     if (!dateString) return '—';
     try {
@@ -234,9 +255,9 @@ function BudgetDetail() {
         borderLeft: `6px solid ${status.color}`,
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
           alignItems: 'flex-start',
           flexWrap: 'wrap',
           gap: '10px'
@@ -334,7 +355,7 @@ function BudgetDetail() {
 
         <div style={{ fontSize: '14px', color: '#6c757d', marginTop: '16px' }}>
           <span style={{ marginRight: '16px' }}>📅 Создан: {formatDate(budget.startDate)}</span>
-          <span style={{ marginRight: '16px' }}>📝 Транзакций: {transactions.length}</span>
+          <span style={{ marginRight: '16px' }}>📝 Транзакций: {totalElements}</span>
           <span>💵 Потрачено: {totalSpent.toLocaleString('ru-RU')} ₽</span>
         </div>
       </div>
@@ -345,11 +366,11 @@ function BudgetDetail() {
         onTransactionAdded={handleTransactionAdded}
       />
 
-      {/* Список транзакций */}
+      {/* Список транзакций с пагинацией */}
       <div>
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '16px'
         }}>
@@ -370,10 +391,15 @@ function BudgetDetail() {
             {isRefreshing ? '🔄' : '🔄 Обновить'}
           </button>
         </div>
-        
+
         <TransactionList
           transactions={transactions}
           onTransactionDeleted={handleTransactionDeleted}
+          page={currentPageNumber}
+          totalPages={totalPages}
+          totalElements={totalElements}
+          onPageChange={handlePageChange}
+          loading={isRefreshing}
         />
       </div>
     </div>

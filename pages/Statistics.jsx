@@ -6,26 +6,29 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,  // Для круговой диаграммы
   Title,
   Tooltip,
+  Legend,
   Filler
 } from 'chart.js';
-import { Line } from 'react-chartjs-2';
+import { Line, Pie } from 'react-chartjs-2';  // Добавлен Pie
 import api from '../api/axios';
 import { useNavigate } from 'react-router-dom';
 
+// Регистрируем ArcElement для Pie chart
 ChartJS.register(
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,  // ← Обязательно для круговой диаграммы
   Title,
   Tooltip,
+  Legend,
   Filler
 );
 
-
-// Периоды соответствуют бэкенду
 const PERIODS = [
   { value: 'THREE_DAYS', label: '3 дня', days: 3 },
   { value: 'WEEK', label: 'Неделя', days: 7 },
@@ -33,6 +36,13 @@ const PERIODS = [
   { value: 'QUARTER', label: 'Квартал', days: 90 },
   { value: 'HALF_YEAR', label: 'Полгода', days: 182 },
   { value: 'YEAR', label: 'Год', days: 365 }
+];
+
+// Цвета для секторов круговой диаграммы
+const PIE_COLORS = [
+  '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0',
+  '#9966FF', '#FF9F40', '#FF6384', '#C9CBCF',
+  '#4BC0C0', '#FF6384', '#36A2EB', '#FFCE56'
 ];
 
 function Statistics() {
@@ -46,13 +56,14 @@ function Statistics() {
   const [error, setError] = useState(null);
   const [loadingBudgets, setLoadingBudgets] = useState(true);
 
-  // Загрузка бюджетов
+  // Загрузка бюджетов для селектора
   useEffect(() => {
     const loadBudgets = async () => {
       setLoadingBudgets(true);
       try {
         const response = await api.get('/budgets');
-        const budgetsList = response.data || [];
+        // Извлекаем массив из Page объекта
+        const budgetsList = response.data.content || [];
         setBudgets(budgetsList);
 
         if (budgetsList.length > 0) {
@@ -78,7 +89,6 @@ function Statistics() {
       setError(null);
 
       try {
-        // POST с body, как у вас в контроллере
         const response = await api.post(`/statistics/${selectedBudgetId}`, {
           period: period
         });
@@ -102,8 +112,8 @@ function Statistics() {
     return () => { cancelled = true; };
   }, [selectedBudgetId, period]);
 
-  // Данные для графика — теперь проще, нет type/amount/category
-  const chartData = useMemo(() => {
+  // Данные для линейного графика (накопительный баланс)
+  const lineChartData = useMemo(() => {
     if (!data?.points?.length) return null;
 
     return {
@@ -122,7 +132,7 @@ function Statistics() {
           backgroundColor: 'rgba(54, 162, 235, 0.1)',
           borderWidth: 2,
           fill: true,
-          tension: 0.4, // Сглаживание для красоты
+          tension: 0.4,
           pointRadius: data.points.length > 60 ? 0 : 3,
           pointHoverRadius: 6
         }
@@ -130,7 +140,31 @@ function Statistics() {
     };
   }, [data?.points]);
 
-  const chartOptions = useMemo(() => ({
+  // Данные для круговой диаграммы (расходы по категориям)
+  const pieChartData = useMemo(() => {
+    if (!data?.pieChartSectors?.length) return null;
+
+    // Фильтруем только категории с суммой > 0
+    const validSectors = data.pieChartSectors.filter(s => s.amount > 0);
+
+    if (validSectors.length === 0) return null;
+
+    return {
+      labels: validSectors.map(s => s.category),
+      datasets: [
+        {
+          data: validSectors.map(s => s.amount),
+          backgroundColor: validSectors.map((_, index) => PIE_COLORS[index % PIE_COLORS.length]),
+          borderColor: '#ffffff',
+          borderWidth: 2,
+          hoverOffset: 15
+        }
+      ]
+    };
+  }, [data?.pieChartSectors]);
+
+  // Опции для линейного графика
+  const lineChartOptions = useMemo(() => ({
     responsive: true,
     maintainAspectRatio: false,
     interaction: {
@@ -188,6 +222,40 @@ function Statistics() {
       }
     }
   }), [data?.points]);
+
+  // Опции для круговой диаграммы
+  const pieChartOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: 'right',
+        labels: {
+          usePointStyle: true,
+          padding: 20,
+          font: {
+            size: 12
+          }
+        }
+      },
+      tooltip: {
+        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+        padding: 12,
+        cornerRadius: 8,
+        callbacks: {
+          label: (context) => {
+            const value = context.parsed;
+            const sector = data.pieChartSectors[context.dataIndex];
+            const percentage = sector.percentage.toFixed(1);
+            return [
+              ` ${sector.category}`,
+              ` 💰 ${value.toLocaleString('ru-RU')} ₽ (${percentage}%)`
+            ];
+          }
+        }
+      }
+    }
+  }), [data?.pieChartSectors]);
 
   const formatMoney = (amount) => {
     if (amount === null || amount === undefined) return '—';
@@ -373,7 +441,7 @@ function Statistics() {
       {/* Контент */}
       {!loading && !error && data && (
         <>
-          {/* Карточки */}
+          {/* Карточки метрик */}
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
@@ -506,45 +574,122 @@ function Statistics() {
             </div>
           </div>
 
-          {/* График */}
+          {/* Графики: линейный и круговой */}
           <div style={{
-            backgroundColor: 'white',
-            padding: '24px',
-            borderRadius: '12px',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+            gap: '24px',
+            marginBottom: '24px'
           }}>
-            <h2 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#374151' }}>
-              📈 Динамика баланса
-            </h2>
-            <div style={{ height: '400px' }}>
-              {chartData ? (
-                <Line data={chartData} options={chartOptions} />
-              ) : (
-                <div style={{
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#9ca3af'
-                }}>
-                  Нет данных для отображения
-                </div>
-              )}
+            {/* Линейный график */}
+            <div style={{
+              backgroundColor: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+              minHeight: '400px'
+            }}>
+              <h2 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#374151' }}>
+                📈 Динамика баланса
+              </h2>
+              <div style={{ height: '350px' }}>
+                {lineChartData ? (
+                  <Line data={lineChartData} options={lineChartOptions} />
+                ) : (
+                  <div style={{
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#9ca3af'
+                  }}>
+                    Нет данных для отображения
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Круговая диаграмма */}
+            <div style={{
+              backgroundColor: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+              minHeight: '400px'
+            }}>
+              <h2 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#374151' }}>
+                🥧 Расходы по категориям
+              </h2>
+              <div style={{ height: '350px' }}>
+                {pieChartData ? (
+                  <Pie data={pieChartData} options={pieChartOptions} />
+                ) : (
+                  <div style={{
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#9ca3af',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}>
+                    <span style={{ fontSize: '48px' }}>📭</span>
+                    <span>Нет расходов за период</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Подсказка */}
-          <div style={{
-            marginTop: '24px',
-            padding: '16px',
-            backgroundColor: '#e7f1ff',
-            borderRadius: '8px',
-            color: '#004085',
-            fontSize: '14px'
-          }}>
-            💡 <strong>Как читать график:</strong> Первая точка - баланс на начало периода. Каждая последующая точка — баланс на конец дня.
-            Линия показывает, как менялся ваш бюджет за выбранный период.
-          </div>
+          {/* Таблица категорий (дополнительно) */}
+          {data.pieChartSectors?.length > 0 && (
+            <div style={{
+              backgroundColor: 'white',
+              padding: '24px',
+              borderRadius: '12px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+            }}>
+              <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', color: '#374151' }}>
+                📋 Детализация расходов
+              </h3>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+                      <th style={{ textAlign: 'left', padding: '12px', fontWeight: '600' }}>Категория</th>
+                      <th style={{ textAlign: 'right', padding: '12px', fontWeight: '600' }}>Сумма</th>
+                      <th style={{ textAlign: 'right', padding: '12px', fontWeight: '600' }}>Доля</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.pieChartSectors
+                      .filter(s => s.amount > 0)
+                      .sort((a, b) => b.amount - a.amount)
+                      .map((sector, index) => (
+                        <tr key={sector.category} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                          <td style={{ padding: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{
+                              width: '12px',
+                              height: '12px',
+                              borderRadius: '50%',
+                              backgroundColor: PIE_COLORS[index % PIE_COLORS.length],
+                              display: 'inline-block'
+                            }} />
+                            {sector.category}
+                          </td>
+                          <td style={{ padding: '12px', textAlign: 'right', fontFamily: 'monospace' }}>
+                            {formatMoney(sector.amount)}
+                          </td>
+                          <td style={{ padding: '12px', textAlign: 'right', fontWeight: '500' }}>
+                            {sector.percentage.toFixed(1)}%
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

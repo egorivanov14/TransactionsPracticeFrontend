@@ -6,7 +6,7 @@ import BudgetRow from '../components/BudgetRow';
 function Dashboard() {
   const { user } = useAuth();
 
-  const [budgets, setBudgets] = useState([]);
+  const [budgetsPage, setBudgetsPage] = useState(null); // Page объект
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -16,19 +16,29 @@ function Dashboard() {
   const [newInitialAmount, setNewInitialAmount] = useState('');
   const [formErrors, setFormErrors] = useState({});
 
-  // Загрузка бюджетов
-  // ПРИМЕЧАНИЕ: Сейчас есть N+1 проблема — для каждого бюджета делается отдельный запрос статуса
-  // РЕКОМЕНДАЦИЯ: Создать на бэкенде endpoint /budgets/with-status который возвращает всё одним запросом
-  const loadBudgets = useCallback(async () => {
+  // Пагинация
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageSize] = useState(10);
+
+  // Загрузка бюджетов с пагинацией
+  const loadBudgets = useCallback(async (page = currentPage) => {
     try {
       setLoading(true);
       setError(null);
-      
-      const response = await api.get('/budgets');
-      const budgetsData = response.data || [];
 
-      // N+1 проблема: отдельный запрос для каждого бюджета
-      // TODO: Заменить на bulk endpoint когда будет готов на бэкенде
+      const response = await api.get('/budgets', {
+        params: {
+          page: page,
+          size: pageSize,
+          sort: 'id,desc'
+        }
+      });
+
+      const pageData = response.data;
+      const budgetsData = pageData.content || [];
+
+      // Загружаем статус для каждого бюджета (N+1 проблема, но пока так)
+      // TODO: оптимизировать через bulk endpoint
       const budgetsWithStatus = await Promise.all(
         budgetsData.map(async (budget) => {
           try {
@@ -40,37 +50,39 @@ function Dashboard() {
             };
           } catch (e) {
             console.warn(`Не удалось загрузить статус для бюджета ${budget.id}:`, e);
-            return { 
-              ...budget, 
-              remains: 0, 
-              totalSpent: 0,
-              _error: true // Маркер ошибки загрузки статуса
+            return {
+              ...budget,
+              remains: 0,
+              totalSpent: 0
             };
           }
         })
       );
 
-      setBudgets(budgetsWithStatus);
+      // Обновляем pageData с enriched данными
+      setBudgetsPage({
+        ...pageData,
+        content: budgetsWithStatus
+      });
     } catch (err) {
       console.error('Ошибка загрузки бюджетов:', err);
-      
-      // Не показываем ошибку если это 401 (перехватит interceptor)
+
       if (err.response?.status !== 401) {
         setError(err.response?.data?.message || 'Не удалось загрузить бюджеты');
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentPage, pageSize]);
 
   useEffect(() => {
     loadBudgets();
-  }, [loadBudgets]);
+  }, [loadBudgets, currentPage]);
 
   // Валидация формы создания
   const validateForm = useCallback(() => {
     const errors = {};
-    
+
     if (!newAccount.trim()) {
       errors.account = 'Введите название бюджета';
     } else if (newAccount.trim().length < 2) {
@@ -92,44 +104,43 @@ function Dashboard() {
 
   // Удаление бюджета
   const handleDelete = useCallback(async (id) => {
-    const budget = budgets.find(b => b.id === id);
+    const budget = budgetsPage?.content?.find(b => b.id === id);
     const budgetName = budget?.account || 'этот бюджет';
-    
+
     if (!window.confirm(`Удалить "${budgetName}"?\n\nВсе транзакции внутри также будут удалены!`)) {
       return;
     }
 
     try {
       await api.delete(`/budgets/id/${id}`);
-      setBudgets(prev => prev.filter(b => b.id !== id));
+      // Перезагружаем текущую страницу
+      loadBudgets();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Не удалось удалить бюджет';
       alert('Ошибка при удалении: ' + errorMessage);
     }
-  }, [budgets]);
+  }, [budgetsPage, loadBudgets]);
 
   // Создание бюджета
   const handleCreate = useCallback(async (e) => {
     e.preventDefault();
-    
+
     if (!validateForm()) return;
 
     setIsCreating(true);
-    
+
     try {
       await api.post('/budgets', {
         account: newAccount.trim(),
         initialAmount: Math.round(parseFloat(newInitialAmount) * 100) / 100
       });
 
-      // Сброс формы
       setNewAccount('');
       setNewInitialAmount('');
       setFormErrors({});
       setShowForm(false);
-      
-      // Перезагрузка списка
-      loadBudgets();
+      setCurrentPage(0); // Сбрасываем на первую страницу
+      loadBudgets(0);
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Не удалось создать бюджет';
       alert('Ошибка создания: ' + errorMessage);
@@ -138,7 +149,6 @@ function Dashboard() {
     }
   }, [newAccount, newInitialAmount, validateForm, loadBudgets]);
 
-  // Обработчик изменения суммы с валидацией
   const handleAmountChange = (e) => {
     const value = e.target.value;
     if (value === '' || /^\d*\.?\d{0,2}$/.test(value)) {
@@ -149,21 +159,48 @@ function Dashboard() {
     }
   };
 
-  // Статистика по бюджетам
+  // Пагинация: номера страниц
+  const getPageNumbers = () => {
+    if (!budgetsPage) return [];
+    const totalPages = budgetsPage.totalPages || 1;
+    const current = budgetsPage.number || 0;
+    const pages = [];
+    const maxVisible = 5;
+    let start = Math.max(0, current - Math.floor(maxVisible / 2));
+    let end = Math.min(totalPages - 1, start + maxVisible - 1);
+
+    if (end - start + 1 < maxVisible) {
+      start = Math.max(0, end - maxVisible + 1);
+    }
+
+    for (let i = start; i <= end; i++) {
+      pages.push(i);
+    }
+    return pages;
+  };
+
+  // Статистика по всем бюджетам (только текущая страница)
   const stats = useMemo(() => {
-    const totalBudgets = budgets.length;
+    const budgets = budgetsPage?.content || [];
+    const totalBudgets = budgetsPage?.totalElements || 0;
     const totalAmount = budgets.reduce((sum, b) => sum + (b.initialAmount || 0), 0);
     const totalRemains = budgets.reduce((sum, b) => sum + (b.remains || 0), 0);
     const overBudgetCount = budgets.filter(b => (b.remains || 0) < 0).length;
 
     return { totalBudgets, totalAmount, totalRemains, overBudgetCount };
-  }, [budgets]);
+  }, [budgetsPage]);
+
+  const budgets = budgetsPage?.content || [];
+  const totalPages = budgetsPage?.totalPages || 1;
+  const currentPageNumber = budgetsPage?.number || 0;
+  const isFirst = budgetsPage?.first ?? true;
+  const isLast = budgetsPage?.last ?? true;
 
   if (loading) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
         alignItems: 'center',
         padding: '60px 20px',
         color: '#6c757d'
@@ -179,7 +216,7 @@ function Dashboard() {
   if (error) {
     return (
       <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-        <div style={{ 
+        <div style={{
           padding: '30px',
           backgroundColor: '#f8d7da',
           borderRadius: '8px',
@@ -190,7 +227,7 @@ function Dashboard() {
           <h2>😕 Ошибка загрузки</h2>
           <p>{error}</p>
           <button
-            onClick={loadBudgets}
+            onClick={() => loadBudgets()}
             style={{
               padding: '10px 20px',
               backgroundColor: '#dc3545',
@@ -211,10 +248,10 @@ function Dashboard() {
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
       {/* Шапка */}
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         marginBottom: '24px',
         flexWrap: 'wrap',
         gap: '16px'
@@ -227,7 +264,7 @@ function Dashboard() {
             </p>
           )}
         </div>
-        
+
         <button
           onClick={() => setShowForm(!showForm)}
           style={{
@@ -249,7 +286,7 @@ function Dashboard() {
       </div>
 
       {/* Статистика */}
-      {budgets.length > 0 && (
+      {stats.totalBudgets > 0 && (
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -265,7 +302,7 @@ function Dashboard() {
             <div style={{ fontSize: '12px', color: '#6c757d', marginBottom: '4px' }}>Всего бюджетов</div>
             <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{stats.totalBudgets}</div>
           </div>
-          
+
           <div style={{
             padding: '16px',
             backgroundColor: '#e9ecef',
@@ -277,7 +314,7 @@ function Dashboard() {
               {stats.totalAmount.toLocaleString('ru-RU')} ₽
             </div>
           </div>
-          
+
           <div style={{
             padding: '16px',
             backgroundColor: stats.totalRemains >= 0 ? '#d4edda' : '#f8d7da',
@@ -285,16 +322,16 @@ function Dashboard() {
             textAlign: 'center'
           }}>
             <div style={{ fontSize: '12px', color: stats.totalRemains >= 0 ? '#155724' : '#721c24', marginBottom: '4px' }}>Общий остаток</div>
-            <div style={{ 
-              fontSize: '24px', 
-              fontWeight: 'bold', 
+            <div style={{
+              fontSize: '24px',
+              fontWeight: 'bold',
               fontFamily: 'monospace',
               color: stats.totalRemains >= 0 ? '#28a745' : '#dc3545'
             }}>
               {stats.totalRemains.toLocaleString('ru-RU')} ₽
             </div>
           </div>
-          
+
           {stats.overBudgetCount > 0 && (
             <div style={{
               padding: '16px',
@@ -313,8 +350,8 @@ function Dashboard() {
 
       {/* Форма создания */}
       {showForm && (
-        <form 
-          onSubmit={handleCreate} 
+        <form
+          onSubmit={handleCreate}
           style={{
             marginBottom: '24px',
             padding: '24px',
@@ -324,7 +361,7 @@ function Dashboard() {
           }}
         >
           <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Создать новый бюджет</h3>
-          
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'flex-start' }}>
             <div style={{ flex: '1 1 250px' }}>
               <input
@@ -338,8 +375,8 @@ function Dashboard() {
                   }
                 }}
                 disabled={isCreating}
-                style={{ 
-                  padding: '10px', 
+                style={{
+                  padding: '10px',
                   width: '100%',
                   border: formErrors.account ? '2px solid #dc3545' : '1px solid #ced4da',
                   borderRadius: '4px',
@@ -352,7 +389,7 @@ function Dashboard() {
                 </div>
               )}
             </div>
-            
+
             <div style={{ flex: '0 0 200px' }}>
               <input
                 type="text"
@@ -361,8 +398,8 @@ function Dashboard() {
                 value={newInitialAmount}
                 onChange={handleAmountChange}
                 disabled={isCreating}
-                style={{ 
-                  padding: '10px', 
+                style={{
+                  padding: '10px',
                   width: '100%',
                   border: formErrors.amount ? '2px solid #dc3545' : '1px solid #ced4da',
                   borderRadius: '4px',
@@ -375,15 +412,15 @@ function Dashboard() {
                 </div>
               )}
             </div>
-            
-            <button 
-              type="submit" 
+
+            <button
+              type="submit"
               disabled={isCreating}
-              style={{ 
-                padding: '10px 24px', 
-                backgroundColor: isCreating ? '#6c757d' : '#007bff', 
-                color: 'white', 
-                border: 'none', 
+              style={{
+                padding: '10px 24px',
+                backgroundColor: isCreating ? '#6c757d' : '#007bff',
+                color: 'white',
+                border: 'none',
                 borderRadius: '4px',
                 cursor: isCreating ? 'not-allowed' : 'pointer',
                 fontSize: '14px',
@@ -398,8 +435,8 @@ function Dashboard() {
 
       {/* Список бюджетов */}
       {budgets.length === 0 ? (
-        <div style={{ 
-          padding: '60px 20px', 
+        <div style={{
+          padding: '60px 20px',
           textAlign: 'center',
           color: '#6c757d',
           backgroundColor: '#f8f9fa',
@@ -415,7 +452,7 @@ function Dashboard() {
           </p>
         </div>
       ) : (
-        <div style={{ 
+        <div style={{
           backgroundColor: 'white',
           borderRadius: '12px',
           boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
@@ -443,6 +480,98 @@ function Dashboard() {
               </tbody>
             </table>
           </div>
+
+          {/* Пагинация бюджетов */}
+          {totalPages > 1 && (
+            <div style={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '20px',
+              borderTop: '1px solid #dee2e6',
+              flexWrap: 'wrap'
+            }}>
+              <button
+                onClick={() => setCurrentPage(0)}
+                disabled={isFirst}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: isFirst ? '#e9ecef' : '#fff',
+                  border: '1px solid #dee2e6',
+                  borderRadius: '4px',
+                  cursor: isFirst ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ⏮️
+              </button>
+
+              <button
+                onClick={() => setCurrentPage(currentPageNumber - 1)}
+                disabled={isFirst}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: isFirst ? '#e9ecef' : '#fff',
+                  border: '1px solid #dee2e6',
+                  borderRadius: '4px',
+                  cursor: isFirst ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ←
+              </button>
+
+              {getPageNumbers().map(num => (
+                <button
+                  key={num}
+                  onClick={() => setCurrentPage(num)}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: num === currentPageNumber ? '#007bff' : '#fff',
+                    color: num === currentPageNumber ? '#fff' : '#212529',
+                    border: '1px solid #dee2e6',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontWeight: num === currentPageNumber ? '600' : '400',
+                    minWidth: '40px'
+                  }}
+                >
+                  {num + 1}
+                </button>
+              ))}
+
+              <button
+                onClick={() => setCurrentPage(currentPageNumber + 1)}
+                disabled={isLast}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: isLast ? '#e9ecef' : '#fff',
+                  border: '1px solid #dee2e6',
+                  borderRadius: '4px',
+                  cursor: isLast ? 'not-allowed' : 'pointer'
+                }}
+              >
+                →
+              </button>
+
+              <button
+                onClick={() => setCurrentPage(totalPages - 1)}
+                disabled={isLast}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: isLast ? '#e9ecef' : '#fff',
+                  border: '1px solid #dee2e6',
+                  borderRadius: '4px',
+                  cursor: isLast ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ⏭️
+              </button>
+
+              <span style={{ marginLeft: '12px', color: '#6c757d', fontSize: '14px' }}>
+                Страница {currentPageNumber + 1} из {totalPages}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

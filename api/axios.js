@@ -1,3 +1,4 @@
+// src/api/axios.js
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8090/api';
@@ -19,7 +20,6 @@ api.interceptors.request.use(
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         } else {
-            // Явное удаление заголовка если токена нет
             delete config.headers.Authorization;
         }
         return config;
@@ -35,36 +35,28 @@ api.interceptors.response.use(
         if (error.response?.status === 401 && !isRedirecting) {
             isRedirecting = true;
             
-            // Полная очистка состояния аутентификации
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             localStorage.removeItem('redirectAfterLogin');
 
-            // Сброс заголовков axios
             delete api.defaults.headers.common['Authorization'];
             delete api.defaults.headers['Authorization'];
 
-            // Проверяем что мы не на странице логина
             const isLoginPage = window.location.pathname === '/login' ||
                                window.location.pathname.includes('/login');
 
             if (!isLoginPage) {
-                // Сохраняем путь для возврата после логина
                 const currentPath = window.location.pathname + window.location.search;
                 localStorage.setItem('redirectAfterLogin', currentPath);
                 
-                // Используем событие для навигации вместо прямого изменения location
-                // Это позволяет React Router обработать переход правильно
                 window.dispatchEvent(new CustomEvent('auth:logout', { 
                     detail: { redirectTo: '/login' } 
                 }));
             }
             
-            // Сбрасываем флаг через небольшую задержку
             setTimeout(() => { isRedirecting = false; }, 1000);
         }
         
-        // Обработка ошибок сети
         if (!error.response) {
             error.message = 'Ошибка сети. Проверьте подключение к интернету.';
         }
